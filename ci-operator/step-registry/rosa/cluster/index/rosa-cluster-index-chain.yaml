@@ -1,0 +1,7 @@
+chain:
+  as: rosa-cluster-index
+  steps:
+  - chain: gather
+  - ref: rosa-cluster-index
+  documentation: |-
+    This chain index on ES the metadata collected from all the steps.

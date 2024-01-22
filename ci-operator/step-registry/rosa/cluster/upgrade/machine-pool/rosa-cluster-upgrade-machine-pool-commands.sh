@@ -6,6 +6,27 @@ set -o pipefail
 
 trap 'CHILDREN=$(jobs -p); if test -n "${CHILDREN}"; then kill ${CHILDREN} && wait; fi' TERM
 
+# Record Cluster Configurations
+cluster_config_file="${SHARED_DIR}/cluster-config"
+function record_cluster() {
+  if [ $# -eq 2 ]; then
+    location="."
+    key=$1
+    value=$2
+  else
+    location=".$1"
+    key=$2
+    value=$3
+  fi
+
+  payload=$(cat $cluster_config_file)
+  if [[ "$value" == "true" ]] || [[ "$value" == "false" ]]; then
+    echo $payload | jq "$location += {\"$key\":$value}" > $cluster_config_file
+  else
+    echo $payload | jq "$location += {\"$key\":\"$value\"}" > $cluster_config_file
+  fi
+}
+
 cluster_id=$(head -n 1 "${SHARED_DIR}/cluster-id")
 
 # Configure aws
@@ -54,20 +75,24 @@ if [[ "$HOSTED_CP" == "true" ]]; then
   for mp_id in $mp_id_list; do
     start_time=$(date +"%s")
     while true; do
-        sleep 120
-        echo "Wait for the node upgrading for the machinepool $mp_id finished ..."
         node_version=$(rosa list machinepool -c $cluster_id -o json | jq -r --arg k $mp_id '.[] | select(.id==$k) .version.id')
+        current_time=$(date +"%s")
         if [[ "$node_version" =~ ${upgraded_to_version}- ]]; then
-          echo "Upgrade the machinepool $mp_id successfully"
+          record_cluster ".timers.machinset_upgrade" "${mp_id}" "$(( ${current_time} - ${start_time} ))"
+          echo "Upgrade the machinepool $mp_id successfully after $(( ${current_time} - ${start_time} )) seconds"
           break
-        fi
-
-        if (( $(date +"%s") - $start_time >= $NODE_UPGRADE_TIMEOUT )); then
-          echo "error: Timed out while waiting for the machinepool upgrading to be ready"
-          rosa list machinepool -c $cluster_id
-          exit 1
+        else
+          if (( $current_time - $start_time >= $NODE_UPGRADE_TIMEOUT )); then
+            echo "error: Timed out while waiting for the machinepool ${mp_id} upgrading to be ready"
+            record_cluster ".timers.machinset_upgrade" "${mp_id}" "not completed"
+            rosa list machinepool -c $cluster_id
+            exit 1
+          else
+            echo "Waiting 60 seconds for the next check on ${mp_id} machinepool"
+            sleep 60
+          fi
         fi
     done
-  done  
+  done
 fi
 rosa list machinepool -c $cluster_id

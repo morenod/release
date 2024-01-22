@@ -8,6 +8,27 @@ trap 'CHILDREN=$(jobs -p); if test -n "${CHILDREN}"; then kill ${CHILDREN} && wa
 
 cluster_id=$(head -n 1 "${SHARED_DIR}/cluster-id")
 
+# Record Cluster Configurations
+cluster_config_file="${SHARED_DIR}/cluster-config"
+function record_cluster() {
+  if [ $# -eq 2 ]; then
+    location="."
+    key=$1
+    value=$2
+  else
+    location=".$1"
+    key=$2
+    value=$3
+  fi
+
+  payload=$(cat $cluster_config_file)
+  if [[ "$value" == "true" ]] || [[ "$value" == "false" ]]; then
+    echo $payload | jq "$location += {\"$key\":$value}" > $cluster_config_file
+  else
+    echo $payload | jq "$location += {\"$key\":\"$value\"}" > $cluster_config_file
+  fi
+}
+
 function set_proxy () {
     if test -s "${SHARED_DIR}/proxy-conf.sh" ; then
         echo "setting the proxy"
@@ -70,18 +91,24 @@ rosa upgrade cluster -y -m auto --version $upgraded_to_version -c $cluster_id ${
 rosa describe upgrade cluster -c $cluster_id
 
 start_time=$(date +"%s")
+echo "Wait for the cluster upgrading finished ..."
 while true; do
-  sleep 120
-  echo "Wait for the cluster upgrading finished ..."
   current_version=$(rosa describe cluster -c $cluster_id -o json | jq -r '.openshift_version')
+  current_time=$(date +"%s")
   if [[ "$current_version" == "$upgraded_to_version" ]]; then
-    echo "Upgrade the cluster $cluster_id to the openshift version $upgraded_to_version successfully"
+    record_cluster ".timers" "ocp_upgrade" "$(( ${current_time} - ${start_time} ))"
+    echo "Upgrade the cluster $cluster_id to the openshift version $upgraded_to_version successfully after $(( ${current_time} - ${start_time} )) seconds"
     break
-  fi
-
-  if (( $(date +"%s") - $start_time >= $CLUTER_UPGRADE_TIMEOUT )); then
-    echo "error: Timed out while waiting for the cluster upgrading to be ready"
-    set_proxy
-    oc get clusteroperators
+  else
+    if (( "${current_time}" - "${start_time}" >= "${CLUTER_UPGRADE_TIMEOUT}" )); then
+      echo "error: Timed out while waiting for the cluster upgrading to be ready"
+      record_cluster ".timers" "ocp_upgrade" "not completed"
+      set_proxy
+      oc get clusteroperators
+      break
+    else
+      echo "Waiting 60 seconds for the next check"
+      sleep 60
+    fi
   fi
 done
